@@ -1,5 +1,8 @@
 -- Room-Based Socket Communication System
-local Socket = loadstring(game:HttpGet("https://socket.bug.tools/"))()
+local Socket
+task.spawn(function()
+	Socket = loadstring(game:HttpGet("https://socket.bug.tools/"))()
+end)
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
