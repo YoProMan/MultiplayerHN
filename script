@@ -392,5 +392,3 @@ end
 
 -- Initialize UI
 createUI()
-
-return RoomSystem
