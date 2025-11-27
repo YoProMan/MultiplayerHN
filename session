@@ -1,0 +1,257 @@
+local Players = game:GetService("Players")
+
+local API_KEY = _G.KEY
+
+local player = Players.LocalPlayer
+local sessionId = nil
+local lastMessageCount = 0
+local isInSession = false
+
+local session = {}
+-- Create a new session
+local function session.createSession()
+    if API_KEY == "YOUR_API_KEY_HERE" then
+        warn("Please set your JSONBin API key first!")
+        warn("Get it from: https://jsonbin.io (free signup)")
+        return false
+    end
+    
+    local initialData = {
+        messages = {},
+        players = {player.Name},
+        createdAt = os.time()
+    }
+    
+    -- Create new bin
+    local success, response = pcall(function()
+        return request({
+            Url = "https://api.jsonbin.io/v3/b",
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["X-Master-Key"] = API_KEY
+            },
+            Body = HttpService:JSONEncode(initialData)
+        })
+    end)
+    
+    if success then
+        print("[DEBUG] Create Status:", response.StatusCode)
+        
+        if response.StatusCode == 200 or response.StatusCode == 201 then
+            local data = HttpService:JSONDecode(response.Body)
+            sessionId = data.metadata.id
+            isInSession = true
+            
+            print("========================================")
+            print("SESSION CREATED!")
+            print("Session ID:", sessionId)
+            print("Share this ID with your partner!")
+            print("========================================")
+            print("Commands: send [message] | read | exit")
+            
+            return true
+        else
+            warn("[ERROR] Create failed:", response.StatusCode)
+            warn("[ERROR] Body:", response.Body)
+            return false
+        end
+    else
+        warn("[ERROR] Request failed:", response)
+        return false
+    end
+end
+
+-- Join existing session
+local function session.joinSession(id)
+    if API_KEY == "YOUR_API_KEY_HERE" then
+        warn("Please set your JSONBin API key first!")
+        return false
+    end
+    
+    sessionId = id
+    
+    -- Try to read session data
+    local success, response = pcall(function()
+        return request({
+            Url = "https://api.jsonbin.io/v3/b/" .. sessionId .. "/latest",
+            Method = "GET",
+            Headers = {
+                ["X-Master-Key"] = API_KEY
+            }
+        })
+    end)
+    
+    if success then
+        print("[DEBUG] Join Status:", response.StatusCode)
+        
+        if response.StatusCode == 200 then
+            local result = HttpService:JSONDecode(response.Body)
+            local data = result.record
+            
+            lastMessageCount = #data.messages
+            isInSession = true
+            
+            print("========================================")
+            print("JOINED SESSION:", sessionId)
+            print("Players:", table.concat(data.players, ", "))
+            print("========================================")
+            print("Commands: send [message] | read | exit")
+            
+            return true
+        else
+            warn("[ERROR] Join failed:", response.StatusCode)
+            warn("[ERROR] Body:", response.Body)
+            return false
+        end
+    else
+        warn("[ERROR] Request failed:", response)
+        return false
+    end
+end
+
+-- Send a message
+local function session.sendMessage(message)
+    if not isInSession then
+        warn("You're not in a session! Use 'create' or 'join [id]'")
+        return
+    end
+    
+    -- Get current data
+    local success, response = pcall(function()
+        return request({
+            Url = "https://api.jsonbin.io/v3/b/" .. sessionId .. "/latest",
+            Method = "GET",
+            Headers = {
+                ["X-Master-Key"] = API_KEY
+            }
+        })
+    end)
+    
+    if not success or response.StatusCode ~= 200 then
+        warn("[ERROR] Fetch failed:", success and response.StatusCode or response)
+        return
+    end
+    
+    local result = HttpService:JSONDecode(response.Body)
+    local data = result.record
+    
+    -- Add new message
+    table.insert(data.messages, {
+        sender = player.Name,
+        text = message,
+        timestamp = os.time()
+    })
+    
+    -- Update bin
+    local updateSuccess, updateResponse = pcall(function()
+        return request({
+            Url = "https://api.jsonbin.io/v3/b/" .. sessionId,
+            Method = "PUT",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["X-Master-Key"] = API_KEY
+            },
+            Body = HttpService:JSONEncode(data)
+        })
+    end)
+    
+    if updateSuccess and updateResponse.StatusCode == 200 then
+        print("[YOU]: " .. message)
+        lastMessageCount = #data.messages
+    else
+        warn("[ERROR] Send failed:", updateSuccess and updateResponse.StatusCode or updateResponse)
+    end
+end
+
+-- Read new messages
+local function session.readMessages()
+    if not isInSession then
+        warn("You're not in a session! Use 'create' or 'join [id]'")
+        return
+    end
+    
+    local success, response = pcall(function()
+        return request({
+            Url = "https://api.jsonbin.io/v3/b/" .. sessionId .. "/latest",
+            Method = "GET",
+            Headers = {
+                ["X-Master-Key"] = API_KEY
+            }
+        })
+    end)
+    
+    if not success or response.StatusCode ~= 200 then
+        warn("[ERROR] Read failed:", success and response.StatusCode or response)
+        return
+    end
+    
+    local result = HttpService:JSONDecode(response.Body)
+    local data = result.record
+    
+    -- Display only new messages
+    if #data.messages > lastMessageCount then
+        print("--- New Messages ---")
+        for i = lastMessageCount + 1, #data.messages do
+            local msg = data.messages[i]
+            if msg.sender ~= player.Name then
+                print(string.format("[%s]: %s", msg.sender, msg.text))
+            end
+        end
+        lastMessageCount = #data.messages
+    else
+        print("No new messages")
+    end
+end
+
+-- Exit session
+local function session.exitSession()
+    isInSession = false
+    sessionId = nil
+    lastMessageCount = 0
+    print("Left session")
+end
+
+-- Command handler
+local function runCommand(command)
+    local args = command:split(" ")
+    local cmd = args[1]:lower()
+    
+    if cmd == "create" then
+        createSession()
+        
+    elseif cmd == "join" then
+        if args[2] then
+            joinSession(args[2])
+        else
+            warn("Usage: join [session_id]")
+        end
+        
+    elseif cmd == "send" then
+        if args[2] then
+            local message = table.concat(args, " ", 2)
+            sendMessage(message)
+        else
+            warn("Usage: send [message]")
+        end
+        
+    elseif cmd == "read" then
+        readMessages()
+        
+    elseif cmd == "exit" then
+        exitSession()
+        
+    elseif cmd == "help" then
+        print("Commands:")
+        print("  create - Create new session")
+        print("  join [id] - Join existing session")
+        print("  send [message] - Send a message")
+        print("  read - Read new messages")
+        print("  exit - Leave session")
+        
+    else
+        warn("Unknown command. Type 'help' for commands (check console for the 'help' cmd)")
+    end
+end
+
+return session
