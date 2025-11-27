@@ -89,21 +89,82 @@ end
 --========================================================
 -- PUBLIC: CREATE LOBBY
 --========================================================
-function module.CreateLobby()
-    session.pageId   = tostring(math.random(100000,999999))
-    session.editCode = tostring(math.random(100000,999999))
-    session.accessCode = tostring(math.random(100000,999999))
+-- Helper: check whether rentry URL exists (returns true if page exists / taken)
+local function pageExists(id)
+    if not id then return false end
+    local ok, res = pcall(function()
+        return request({
+            Url = "https://rentry.co/" .. tostring(id),
+            Method = "GET",
+            Headers = { ["Accept"] = "*/*" }
+        })
+    end)
+    if not ok or not res then
+        -- If the request fails (network), assume not taken (so caller can try) 
+        -- or you can choose to return true to be conservative.
+        return false
+    end
+    -- If status == 200 then page exists (taken). 404 (or redirect to root) likely means free.
+    return res.StatusCode == 200
+end
 
+-- Helper: generate a random lowercase alpha string of given length
+local function makeRandomId(minLen, maxLen)
+    minLen = minLen or 10
+    maxLen = maxLen or 16
+    local length = math.random(minLen, maxLen)
+    local s = ""
+    for i = 1, length do
+        s = s .. string.char(math.random(97, 122)) -- a-z
+    end
+    return s
+end
+
+-- Robust CreateLobby replacement (returns pageId, editCode, accessCode)
+function module.CreateLobby()
+    local maxAttempts = 8
+    local newId = nil
+
+    for attempt = 1, maxAttempts do
+        local candidate = makeRandomId(12, 14) -- 12-14 letters, change if you want
+        if not pageExists(candidate) then
+            newId = candidate
+            break
+        end
+        -- small wait between tries (optional)
+        task.wait(0.05)
+    end
+
+    if not newId then
+        -- fallback to a GUID-like one (still alpha + dashes removed)
+        newId = tostring(HttpService:GenerateGUID(false)):gsub("%-",""):sub(1,14)
+    end
+
+    -- generate edit and access codes (kept numeric for human copy/paste)
+    local edit = tostring(math.random(100000, 999999))
+    local access = tostring(math.random(100000, 999999))
+
+    -- set session state (module's session table assumed)
+    session.pageId = newId
+    session.editCode = edit
+    session.accessCode = access
+    session.messages = {}
+
+    -- create initial payload and write using your existing writeRaw() function
     local initial = {
         messages = {},
         players = {},
         created = os.time()
     }
 
-    writeRaw(initial)
-    session.messages = {}
+    -- writeRaw should already exist in your module and will write metadata + JSON correctly
+    local ok = writeRaw(initial)
+    if not ok then
+        warn("CreateLobby: failed to write initial page content for id:", newId)
+        -- you can choose to return nils here
+    end
 
-    return session.pageId, session.editCode, session.accessCode
+    return newId, edit, access
 end
 
 --========================================================
