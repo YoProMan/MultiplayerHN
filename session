@@ -89,38 +89,6 @@ end
 --========================================================
 -- PUBLIC: CREATE LOBBY
 --========================================================
--- Helper: check whether rentry URL exists (returns true if page exists / taken)
-local function pageExists(id)
-    if not id then return false end
-    local ok, res = pcall(function()
-        return request({
-            Url = "https://rentry.co/" .. tostring(id),
-            Method = "GET",
-            Headers = { ["Accept"] = "*/*" }
-        })
-    end)
-    if not ok or not res then
-        -- If the request fails (network), assume not taken (so caller can try) 
-        -- or you can choose to return true to be conservative.
-        return false
-    end
-    -- If status == 200 then page exists (taken). 404 (or redirect to root) likely means free.
-    return res.StatusCode == 200
-end
-
--- Helper: generate a random lowercase alpha string of given length
-local function makeRandomId(minLen, maxLen)
-    minLen = minLen or 10
-    maxLen = maxLen or 16
-    local length = math.random(minLen, maxLen)
-    local s = ""
-    for i = 1, length do
-        s = s .. string.char(math.random(97, 122)) -- a-z
-    end
-    return s
-end
-
--- Creates a new empty rentry page properly. Returns pageId, editCode, accessCode
 function module.CreateLobby()
     -- Step 1: Ask rentry to create a real page
     local newPage = request({
@@ -138,7 +106,7 @@ function module.CreateLobby()
         return nil
     end
 
-    local decoded = decodeJSON(newPage.Body)
+    local decoded = decode(newPage.Body)
     if not decoded or not decoded.url or not decoded.edit_code then
         warn("CreateLobby FAILED: invalid /new response")
         return nil
@@ -161,11 +129,10 @@ function module.CreateLobby()
     -- Step 4: Write the initial JSON payload properly
     local initialData = {
         messages = {},
-        players = {},    -- <- THIS FIXES "no players"
+        players = {},
         created = os.time()
     }
 
-    -- metadata + JSON body
     local content =
         "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n" ..
         "---\n" ..
