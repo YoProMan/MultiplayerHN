@@ -1,6 +1,6 @@
---========================================================
---  RENTRY MULTIPLAYER LOBBY MODULE (with CSRF & proper form‑data)
---========================================================
+-- RentryLobby.lua
+-- Uses Rentry.co API to store lobbies as pastes — with players + messages JSON.
+
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
@@ -14,303 +14,278 @@ local session = {
     listeners = {}
 }
 
--- helper: URL‑encode a table as form data
+-- Helper: URL‑encode form data
 local function formEncode(tbl)
     local parts = {}
-    for k,v in pairs(tbl) do
-        table.insert(parts,
-            HttpService:UrlEncode(k) .. "=" .. HttpService:UrlEncode(tostring(v))
-        )
+    for k, v in pairs(tbl) do
+        parts[#parts + 1] = HttpService:UrlEncode(k) .. "=" .. HttpService:UrlEncode(tostring(v))
     end
     return table.concat(parts, "&")
 end
 
--- helper: perform a GET to rentry root to retrieve CSRF token/cookie
+-- Helper: send GET or POST, returns response or nil
+local function doRequest(req)
+    local ok, res = pcall(function() return request(req) end)
+    if not ok or not res then return nil end
+    return res
+end
+
+-- Step 1: GET root to retrieve CSRF cookie
 local function getCsrf()
-    local ok, res = pcall(function()
-        return request({
-            Url = "https://rentry.co/",
-            Method = "GET",
-            Headers = { ["Accept"] = "*/*" }
-        })
-    end)
-    if not ok or not res or res.StatusCode ~= 200 then
+    local res = doRequest({ Url = "https://rentry.co/", Method = "GET", Headers = { ["Accept"] = "*/*" } })
+    if not res or res.StatusCode ~= 200 then
         return nil
     end
     local cookies = res.Headers["set-cookie"] or res.Headers["Set-Cookie"]
     if not cookies then return nil end
     local token = cookies:match("csrftoken=([^;]+)")
-    if not token then return nil end
     return token, cookies
 end
 
---========================================================
--- RAW PAGE PARSER (metadata + --- + JSON)
---========================================================
-local function parseRaw(rawText)
-    local i = rawText:find("\n---")
+-- Step 2: parse JSON‑wrapped data from raw page
+local function parseRaw(raw)
+    local i = raw:find("\n---")
     if not i then return nil end
-    local json = rawText:sub(i + 4)
-    return decode(json)
+    local jsonPart = raw:sub(i + 4)
+    local ok, data = pcall(function() return HttpService:JSONDecode(jsonPart) end)
+    if ok then return data end
+    return nil
 end
 
---========================================================
--- READ RAW JSON FROM PAGE
---========================================================
-local function readRaw()
-    if not session.pageId then return nil end
+-- ==========================
+-- PUBLIC API
+-- ==========================
 
-    local url = "https://rentry.co/" .. session.pageId .. "/raw"
-
-    local ok, res = pcall(function()
-        return request({
-            Url = url,
-            Method = "GET",
-            Headers = {
-                ["Accept"] = "*/*",
-                ["rentry-auth"] = session.accessCode or ""
-            }
-        })
-    end)
-
-    if not ok or not res or res.StatusCode ~= 200 then
+-- Create a new lobby → returns pageId, editCode, accessCode or nil if failed
+function module.CreateLobby()
+    local csrf, cookie = getCsrf()
+    if not csrf then
+        warn("[RentryLobby] Failed to fetch CSRF token")
         return nil
     end
 
-    return parseRaw(res.Body)
-end
-
---========================================================
--- WRITE RAW JSON TO PAGE
---========================================================
-local function writeRaw(dataTable)
-    local text =
-        "SECRET_RAW_ACCESS_CODE = " .. session.accessCode .. "\n" ..
-        "---\n" ..
-        encode(dataTable)
-
-    local ok, res = pcall(function()
-        return request({
-            Url = "https://rentry.co/api/edit/" .. session.pageId,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/json",
-                ["Accept"] = "application/json"
-            },
-            Body = encode({
-                edit_code = session.editCode,
-                text = text
-            })
-        })
-    end)
-
-    return ok and res and res.StatusCode == 200
-end
-
-
---========================================================
--- PUBLIC: CREATE LOBBY
---========================================================
-function module.CreateLobby()
-    -- 1: get csrf token + cookies
-    local csrf, cookie = getCsrf()
-    if not csrf then
-        warn("[CreateLobby] Failed to get CSRF token")
-        return nil, nil, nil
-    end
-
-    -- 2: POST to /api/new using form‑encoded body
+    -- POST to /api/new
     local body = formEncode({
         csrfmiddlewaretoken = csrf,
-        text = "initializing..."
+        text = "initial\n"  -- placeholder content
     })
 
-    local ok, res = pcall(function()
-        return request({
-            Url = "https://rentry.co/api/new",
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/x-www-form-urlencoded",
-                ["Cookie"] = cookie,
-                ["Referer"] = "https://rentry.co/",
-                ["Accept"] = "application/json"
-            },
-            Body = body
-        })
-    end)
+    local res = doRequest({
+        Url = "https://rentry.co/api/new",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/x-www-form-urlencoded",
+            ["Cookie"] = cookie,
+            ["Referer"] = "https://rentry.co/",
+            ["Accept"] = "application/json"
+        },
+        Body = body
+    })
 
-    if not ok or not res or res.StatusCode ~= 200 then
-        warn("[CreateLobby] /api/new request failed", res and res.StatusCode or res)
-        return nil, nil, nil
+    if not res or res.StatusCode ~= 200 then
+        warn("[RentryLobby] /api/new failed:", res and res.StatusCode)
+        return nil
     end
 
-    local data
-    local ok2, err = pcall(function()
-        data = HttpService:JSONDecode(res.Body)
-    end)
-    if not ok2 or not data or not data.url or not data.edit_code then
-        warn("[CreateLobby] Invalid JSON or missing url/edit_code", res.Body)
-        return nil, nil, nil
+    local ok, data = pcall(function() return HttpService:JSONDecode(res.Body) end)
+    if not ok or not data or not data.url or not data.edit_code then
+        warn("[RentryLobby] Invalid /new response:", res.Body)
+        return nil
     end
 
-    local pageId = data.url:sub(2)  -- remove leading "/"
-    local editCode = data.edit_code
-    local accessCode = tostring(math.random(100000, 999999))
+    local pageId = data.url:sub(2)  -- strip leading "/"
+    local edit = data.edit_code
+    local access = tostring(math.random(100000, 999999))
 
     session.pageId = pageId
-    session.editCode = editCode
-    session.accessCode = accessCode
+    session.editCode = edit
+    session.accessCode = access
     session.messages = {}
 
-    -- 3: Write initial JSON (players/messages) with metadata
-    local initial = {
-        messages = {},
-        players = {},
-        created = os.time()
-    }
+    -- Now write initial JSON to page
+    local init = { players = {}, messages = {}, created = os.time() }
+    local content = "SECRET_RAW_ACCESS_CODE = " .. access .. "\n---\n" .. HttpService:JSONEncode(init)
 
-    local content = "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n" ..
-                    "---\n" .. HttpService:JSONEncode(initial)
-
-    -- Need to re‑get CSRF token (fresh session)
+    -- Must re‑get CSRF (fresh session)
     local csrf2, cookie2 = getCsrf()
     if not csrf2 then
-        warn("[CreateLobby] Failed to get CSRF token for edit")
-        return pageId, editCode, accessCode  -- page exists, but write may fail
+        warn("[RentryLobby] Failed to get CSRF for edit")
+        return pageId, edit, access
     end
 
     local body2 = formEncode({
         csrfmiddlewaretoken = csrf2,
-        edit_code = editCode,
+        edit_code = edit,
         text = content
     })
 
-    local ok3, res2 = pcall(function()
-        return request({
-            Url = "https://rentry.co/api/edit/" .. pageId,
-            Method = "POST",
-            Headers = {
-                ["Content-Type"] = "application/x-www-form-urlencoded",
-                ["Cookie"] = cookie2,
-                ["Referer"] = "https://rentry.co/" .. pageId,
-                ["Accept"] = "application/json"
-            },
-            Body = body2
-        })
-    end)
+    local res2 = doRequest({
+        Url = "https://rentry.co/api/edit/" .. pageId,
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/x-www-form-urlencoded",
+            ["Cookie"] = cookie2,
+            ["Referer"] = "https://rentry.co/" .. pageId,
+            ["Accept"] = "application/json"
+        },
+        Body = body2
+    })
 
-    if not ok3 or not res2 or res2.StatusCode ~= 200 then
-        warn("[CreateLobby] Failed to write initial page data", res2 and res2.StatusCode or res2)
-        return pageId, editCode, accessCode
+    if not res2 or res2.StatusCode ~= 200 then
+        warn("[RentryLobby] Failed to write initial page data (edit)", res2 and res2.StatusCode or "")
+        return pageId, edit, access
     end
 
-    return pageId, editCode, accessCode
+    return pageId, edit, access
 end
 
---========================================================
--- PUBLIC: JOIN LOBBY
---========================================================
+-- Join an existing lobby (pageId, editCode, accessCode) → returns true/false
 function module.JoinLobby(pageId, editCode, accessCode)
     session.pageId = pageId
     session.editCode = editCode
     session.accessCode = accessCode
 
-    local data = readRaw()
-    if not data then return false end
-
-    session.messages = data.messages or {}
-
-    -- Update players list
-    data.players = data.players or {}
-    local myName = Players.LocalPlayer.Name
-    if not table.find(data.players, myName) then
-        table.insert(data.players, myName)
-        writeRaw(data)
+    local rawRes = doRequest({
+        Url = "https://rentry.co/" .. pageId .. "/raw",
+        Method = "GET",
+        Headers = {
+            ["Accept"] = "*/*",
+            ["rentry‑auth"] = accessCode
+        }
+    })
+    if not rawRes or rawRes.StatusCode ~= 200 then
+        warn("[RentryLobby] JoinLobby: raw fetch failed")
+        return false
     end
 
+    local data = parseRaw(rawRes.Body)
+    if not data then
+        warn("[RentryLobby] JoinLobby: parse failed")
+        return false
+    end
+
+    data.players = data.players or {}
+    local name = Players.LocalPlayer.Name
+    if not table.find(data.players, name) then
+        table.insert(data.players, name)
+        -- write back
+        -- (reuse the write logic)
+        session.messages = data.messages or {}
+        return module.SendMessage("") and true  -- cheap hack to write the updated players list
+    end
+
+    session.messages = data.messages or {}
     return true
 end
 
---========================================================
--- PUBLIC: LEAVE LOBBY
---========================================================
-function module.LeaveLobby()
-    session.pageId = nil
-    session.editCode = nil
-    session.accessCode = nil
-    session.messages = {}
-    session.listeners = {}
-end
-
---========================================================
--- PUBLIC: SEND MESSAGE
---========================================================
+-- Send a message
 function module.SendMessage(text)
     if not session.pageId then return false end
-    local data = readRaw()
-    if not data then return false end
 
-    local msg = {
+    local rawRes = doRequest({
+        Url = "https://rentry.co/" .. session.pageId .. "/raw",
+        Method = "GET",
+        Headers = {
+            ["Accept"] = "*/*",
+            ["rentry‑auth"] = session.accessCode
+        }
+    })
+    if not rawRes or rawRes.StatusCode ~= 200 then
+        warn("[RentryLobby] SendMessage: raw fetch failed")
+        return false
+    end
+
+    local data = parseRaw(rawRes.Body)
+    if not data then
+        warn("[RentryLobby] SendMessage: parse failed")
+        return false
+    end
+
+    data.messages = data.messages or {}
+    data.players = data.players or {}
+
+    local entry = {
         author = Players.LocalPlayer.Name,
         text = text,
         time = os.time()
     }
+    table.insert(data.messages, entry)
 
-    data.messages = data.messages or {}
-    table.insert(data.messages, msg)
+    -- re‑build content
+    local content = "SECRET_RAW_ACCESS_CODE = " .. session.accessCode .. "\n---\n" .. HttpService:JSONEncode(data)
+
+    -- get CSRF again
+    local csrf2, cookie2 = getCsrf()
+    if not csrf2 then
+        warn("[RentryLobby] SendMessage: could not get CSRF for edit")
+        return false
+    end
+
+    local body2 = formEncode({ csrfmiddlewaretoken = csrf2, edit_code = session.editCode, text = content })
+
+    local res2 = doRequest({
+        Url = "https://rentry.co/api/edit/" .. session.pageId,
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/x-www-form-urlencoded",
+            ["Cookie"] = cookie2,
+            ["Referer"] = "https://rentry.co/" .. session.pageId,
+            ["Accept"] = "application/json"
+        },
+        Body = body2
+    })
+
+    if not res2 or res2.StatusCode ~= 200 then
+        warn("[RentryLobby] SendMessage: failed to edit page", res2 and res2.StatusCode or "")
+        return false
+    end
 
     session.messages = data.messages
-    writeRaw(data)
-
     return true
 end
 
---========================================================
--- PUBLIC: LISTEN TO MESSAGES
--- includeSelf = true/false
--- callback(messageTable)
---========================================================
-function module.ListenToMessages(includeSelf, callback)
-    table.insert(session.listeners, {
-        includeSelf = includeSelf,
-        callback = callback,
-        lastCount = #session.messages
-    })
-end
-
---========================================================
--- PUBLIC: LIST PLAYERS IN LOBBY
---========================================================
+-- Get current players
 function module.ListPlayersInLobby()
-    local data = readRaw()
-    if not data or not data.players then return {} end
-    return data.players
+    if not session.pageId then return {} end
+    local rawRes = doRequest({
+        Url = "https://rentry.co/" .. session.pageId .. "/raw",
+        Method = "GET",
+        Headers = { ["Accept"] = "*/*", ["rentry‑auth"] = session.accessCode }
+    })
+    if not rawRes or rawRes.StatusCode ~= 200 then return {} end
+    local data = parseRaw(rawRes.Body)
+    if not data then return {} end
+    return data.players or {}
 end
 
---========================================================
--- BACKGROUND LISTENER LOOP
---========================================================
+-- Listen to messages (includeSelf: bool, callback(msgTable))
+function module.ListenToMessages(includeSelf, callback)
+    table.insert(session.listeners, { includeSelf = includeSelf, callback = callback, last = #session.messages })
+end
+
+-- Background listener
 task.spawn(function()
     while true do
         if session.pageId then
-            local data = readRaw()
-            if data then
-                local new = data.messages or {}
-
-                -- Check all listeners
-                for _, listener in ipairs(session.listeners) do
-                    if #new > listener.lastCount then
-                        for i = listener.lastCount + 1, #new do
-                            local msg = new[i]
-                            if listener.includeSelf or msg.author ~= Players.LocalPlayer.Name then
-                                listener.callback(msg)
+            local rawRes = doRequest({
+                Url = "https://rentry.co/" .. session.pageId .. "/raw",
+                Method = "GET",
+                Headers = { ["Accept"] = "*/*", ["rentry‑auth"] = session.accessCode }
+            })
+            if rawRes and rawRes.StatusCode == 200 then
+                local data = parseRaw(rawRes.Body)
+                if data and data.messages then
+                    for _, lst in ipairs(session.listeners) do
+                        for i = (lst.last + 1), #data.messages do
+                            local msg = data.messages[i]
+                            if lst.includeSelf or msg.author ~= Players.LocalPlayer.Name then
+                                lst.callback(msg)
                             end
                         end
+                        lst.last = #data.messages
                     end
-                    listener.lastCount = #new
+                    session.messages = data.messages
                 end
-
-                session.messages = new
             end
         end
         task.wait(1)
