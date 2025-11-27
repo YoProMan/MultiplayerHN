@@ -120,51 +120,71 @@ local function makeRandomId(minLen, maxLen)
     return s
 end
 
--- Robust CreateLobby replacement (returns pageId, editCode, accessCode)
+-- Creates a new empty rentry page properly. Returns pageId, editCode, accessCode
 function module.CreateLobby()
-    local maxAttempts = 8
-    local newId = nil
+    -- Step 1: Ask rentry to create a real page
+    local newPage = request({
+        Url = "https://rentry.co/api/new",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Accept"] = "application/json"
+        },
+        Body = HttpService:JSONEncode({ text = "initializing..." })
+    })
 
-    for attempt = 1, maxAttempts do
-        local candidate = makeRandomId(12, 14) -- 12-14 letters, change if you want
-        if not pageExists(candidate) then
-            newId = candidate
-            break
-        end
-        -- small wait between tries (optional)
-        task.wait(0.05)
+    if not newPage or newPage.StatusCode ~= 200 then
+        warn("CreateLobby FAILED: rentry /new endpoint unavailable")
+        return nil
     end
 
-    if not newId then
-        -- fallback to a GUID-like one (still alpha + dashes removed)
-        newId = tostring(HttpService:GenerateGUID(false)):gsub("%-",""):sub(1,14)
+    local decoded = decodeJSON(newPage.Body)
+    if not decoded or not decoded.url or not decoded.edit_code then
+        warn("CreateLobby FAILED: invalid /new response")
+        return nil
     end
 
-    -- generate edit and access codes (kept numeric for human copy/paste)
-    local edit = tostring(math.random(100000, 999999))
-    local access = tostring(math.random(100000, 999999))
+    -- Response looks like "/abcd123" → extract only the ID
+    local pageId = decoded.url:sub(2)
+    local editCode = decoded.edit_code
 
-    -- set session state (module's session table assumed)
-    session.pageId = newId
-    session.editCode = edit
-    session.accessCode = access
+    -- Step 2: Create our access code
+    local accessCode = tostring(math.random(100000,999999))
+
+    -- Step 3: Save into session
+    session.pageId = pageId
+    session.editCode = editCode
+    session.accessCode = accessCode
     session.messages = {}
+    session.players = {}
 
-    -- create initial payload and write using your existing writeRaw() function
-    local initial = {
+    -- Step 4: Write the initial JSON payload properly
+    local initialData = {
         messages = {},
-        players = {},
+        players = {},    -- <- THIS FIXES "no players"
         created = os.time()
     }
 
-    -- writeRaw should already exist in your module and will write metadata + JSON correctly
-    local ok = writeRaw(initial)
-    if not ok then
-        warn("CreateLobby: failed to write initial page content for id:", newId)
-        -- you can choose to return nils here
-    end
+    -- metadata + JSON body
+    local content =
+        "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n" ..
+        "---\n" ..
+        HttpService:JSONEncode(initialData)
 
-    return newId, edit, access
+    request({
+        Url = "https://rentry.co/api/edit/" .. pageId,
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Accept"] = "application/json"
+        },
+        Body = HttpService:JSONEncode({
+            edit_code = editCode,
+            text = content
+        })
+    })
+
+    return pageId, editCode, accessCode
 end
 
 --========================================================
