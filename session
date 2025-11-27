@@ -11,7 +11,7 @@ local module = {}
 -- CONFIGURATION
 -- =======================================================
 -- Sign up at https://jsonbin.io and get a free bin API key
-local JSONBIN_API_KEY = "REPLACE_WITH_YOUR_KEY"
+local JSONBIN_API_KEY = "$2a$10$Tpvo6h8xS1iR4LPV385IFOQyndfLi88O0sOIV/Q9mc.2wsd3wpePO"
 local JSONBIN_BASE = "https://api.jsonbin.io/v3/b"
 
 -- =======================================================
