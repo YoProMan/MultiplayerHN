@@ -91,66 +91,88 @@ end
 --========================================================
 function module.CreateLobby()
     -- Step 1: Ask rentry to create a real page
-    local newPage = request({
-        Url = "https://rentry.co/api/new",
-        Method = "POST",
-        Headers = {
-            ["Content-Type"] = "application/json",
-            ["Accept"] = "application/json"
-        },
-        Body = HttpService:JSONEncode({ text = "initializing..." })
-    })
+    local ok, newPage = pcall(function()
+        return request({
+            Url = "https://rentry.co/api/new",
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["Accept"] = "application/json"
+            },
+            Body = HttpService:JSONEncode({ text = "initializing..." })
+        })
+    end)
 
-    if not newPage or newPage.StatusCode ~= 200 then
-        warn("CreateLobby FAILED: rentry /new endpoint unavailable")
-        return nil
+    if not ok or not newPage then
+        warn("[CreateLobby] HTTP request failed or returned nil")
+        return nil, nil, nil
     end
 
-    local decoded = decode(newPage.Body)
-    if not decoded or not decoded.url or not decoded.edit_code then
-        warn("CreateLobby FAILED: invalid /new response")
-        return nil
+    if newPage.StatusCode ~= 200 then
+        warn("[CreateLobby] Rentry returned status code:", newPage.StatusCode)
+        return nil, nil, nil
     end
 
-    -- Response looks like "/abcd123" → extract only the ID
-    local pageId = decoded.url:sub(2)
+    local decoded
+    local decodeOk, decodeErr = pcall(function()
+        decoded = HttpService:JSONDecode(newPage.Body)
+    end)
+
+    if not decodeOk or not decoded then
+        warn("[CreateLobby] Failed to decode JSON:", decodeErr or newPage.Body)
+        return nil, nil, nil
+    end
+
+    if not decoded.url or not decoded.edit_code then
+        warn("[CreateLobby] Invalid /new response, missing url or edit_code")
+        return nil, nil, nil
+    end
+
+    -- Extract page ID from url ("/abcd123" -> "abcd123")
+    local pageId = decoded.url:match("^/(%w+)$")
+    if not pageId then
+        warn("[CreateLobby] Failed to extract pageId from URL:", decoded.url)
+        return nil, nil, nil
+    end
+
     local editCode = decoded.edit_code
-
-    -- Step 2: Create our access code
     local accessCode = tostring(math.random(100000,999999))
 
-    -- Step 3: Save into session
+    -- Step 2: Save session
     session.pageId = pageId
     session.editCode = editCode
     session.accessCode = accessCode
     session.messages = {}
     session.players = {}
 
-    -- Step 4: Write the initial JSON payload properly
+    -- Step 3: Write initial JSON
     local initialData = {
         messages = {},
         players = {},
         created = os.time()
     }
 
-    local content =
-        "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n" ..
-        "---\n" ..
-        HttpService:JSONEncode(initialData)
+    local content = "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n---\n" .. HttpService:JSONEncode(initialData)
 
-    request({
-        Url = "https://rentry.co/api/edit/" .. pageId,
-        Method = "POST",
-        Headers = {
-            ["Content-Type"] = "application/json",
-            ["Accept"] = "application/json"
-        },
-        Body = HttpService:JSONEncode({
-            edit_code = editCode,
-            text = content
+    local writeOk, writeRes = pcall(function()
+        return request({
+            Url = "https://rentry.co/api/edit/" .. pageId,
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json",
+                ["Accept"] = "application/json"
+            },
+            Body = HttpService:JSONEncode({ edit_code = editCode, text = content })
         })
-    })
+    end)
 
+    if not writeOk or not writeRes or writeRes.StatusCode ~= 200 then
+        warn("[CreateLobby] Failed to write initial JSON to Rentry page")
+        return nil, nil, nil
+    end
+
+    -- Success
+    print("[CreateLobby] Lobby created! ID:", pageId, "EditCode:", editCode, "AccessCode:", accessCode)
     return pageId, editCode, accessCode
 end
 
