@@ -1,5 +1,5 @@
 --========================================================
---  JSONBIN.IO MULTIPLAYER LOBBY MODULE
+--  JSONBIN.IO MULTIPLAYER LOBBY MODULE (Polished)
 --========================================================
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -73,7 +73,7 @@ end
 function module.CreateLobby()
     local initialData = {
         messages = {},
-        players = {},
+        players = { LocalPlayer.Name }, -- add creator
         created = os.time()
     }
 
@@ -102,8 +102,7 @@ function module.CreateLobby()
     end
 
     session.binId = body.metadata.id
-    session.messages = {}
-
+    session.messages = initialData.messages
     return session.binId
 end
 
@@ -130,6 +129,17 @@ end
 -- LEAVE LOBBY
 -- =======================================================
 function module.LeaveLobby()
+    if not session.binId then return end
+    local data = readBin()
+    if data and data.players then
+        local name = LocalPlayer.Name
+        for i = #data.players, 1, -1 do
+            if data.players[i] == name then
+                table.remove(data.players, i)
+            end
+        end
+        writeBin(data)
+    end
     session.binId = nil
     session.messages = {}
     session.listeners = {}
@@ -156,7 +166,6 @@ end
 
 -- =======================================================
 -- LISTEN TO MESSAGES
--- includeSelf: boolean, callback(msgTable)
 -- =======================================================
 function module.ListenToMessages(includeSelf, callback)
     table.insert(session.listeners, {
