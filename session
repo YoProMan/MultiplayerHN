@@ -1,14 +1,11 @@
 --========================================================
---  RENTRY MULTIPLAYER LOBBY MODULE (API-READY VERSION)
+--  RENTRY MULTIPLAYER LOBBY MODULE (with CSRF & proper form‑data)
 --========================================================
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 
 local module = {}
 
---========================================================
--- SESSION STATE
---========================================================
 local session = {
     pageId = nil,
     editCode = nil,
@@ -17,10 +14,34 @@ local session = {
     listeners = {}
 }
 
-local function encode(t)  return HttpService:JSONEncode(t) end
-local function decode(s)
-    local ok, data = pcall(function() return HttpService:JSONDecode(s) end)
-    return ok and data or nil
+-- helper: URL‑encode a table as form data
+local function formEncode(tbl)
+    local parts = {}
+    for k,v in pairs(tbl) do
+        table.insert(parts,
+            HttpService:UrlEncode(k) .. "=" .. HttpService:UrlEncode(tostring(v))
+        )
+    end
+    return table.concat(parts, "&")
+end
+
+-- helper: perform a GET to rentry root to retrieve CSRF token/cookie
+local function getCsrf()
+    local ok, res = pcall(function()
+        return request({
+            Url = "https://rentry.co/",
+            Method = "GET",
+            Headers = { ["Accept"] = "*/*" }
+        })
+    end)
+    if not ok or not res or res.StatusCode ~= 200 then
+        return nil
+    end
+    local cookies = res.Headers["set-cookie"] or res.Headers["Set-Cookie"]
+    if not cookies then return nil end
+    local token = cookies:match("csrftoken=([^;]+)")
+    if not token then return nil end
+    return token, cookies
 end
 
 --========================================================
@@ -86,93 +107,103 @@ local function writeRaw(dataTable)
     return ok and res and res.StatusCode == 200
 end
 
+
 --========================================================
 -- PUBLIC: CREATE LOBBY
 --========================================================
 function module.CreateLobby()
-    -- Step 1: Ask rentry to create a real page
-    local ok, newPage = pcall(function()
+    -- 1: get csrf token + cookies
+    local csrf, cookie = getCsrf()
+    if not csrf then
+        warn("[CreateLobby] Failed to get CSRF token")
+        return nil, nil, nil
+    end
+
+    -- 2: POST to /api/new using form‑encoded body
+    local body = formEncode({
+        csrfmiddlewaretoken = csrf,
+        text = "initializing..."
+    })
+
+    local ok, res = pcall(function()
         return request({
             Url = "https://rentry.co/api/new",
             Method = "POST",
             Headers = {
-                ["Content-Type"] = "application/json",
+                ["Content-Type"] = "application/x-www-form-urlencoded",
+                ["Cookie"] = cookie,
+                ["Referer"] = "https://rentry.co/",
                 ["Accept"] = "application/json"
             },
-            Body = HttpService:JSONEncode({ text = "initializing..." })
+            Body = body
         })
     end)
 
-    if not ok or not newPage then
-        warn("[CreateLobby] HTTP request failed or returned nil")
+    if not ok or not res or res.StatusCode ~= 200 then
+        warn("[CreateLobby] /api/new request failed", res and res.StatusCode or res)
         return nil, nil, nil
     end
 
-    if newPage.StatusCode ~= 200 then
-        warn("[CreateLobby] Rentry returned status code:", newPage.StatusCode)
-        return nil, nil, nil
-    end
-
-    local decoded
-    local decodeOk, decodeErr = pcall(function()
-        decoded = HttpService:JSONDecode(newPage.Body)
+    local data
+    local ok2, err = pcall(function()
+        data = HttpService:JSONDecode(res.Body)
     end)
-
-    if not decodeOk or not decoded then
-        warn("[CreateLobby] Failed to decode JSON:", decodeErr or newPage.Body)
+    if not ok2 or not data or not data.url or not data.edit_code then
+        warn("[CreateLobby] Invalid JSON or missing url/edit_code", res.Body)
         return nil, nil, nil
     end
 
-    if not decoded.url or not decoded.edit_code then
-        warn("[CreateLobby] Invalid /new response, missing url or edit_code")
-        return nil, nil, nil
-    end
+    local pageId = data.url:sub(2)  -- remove leading "/"
+    local editCode = data.edit_code
+    local accessCode = tostring(math.random(100000, 999999))
 
-    -- Extract page ID from url ("/abcd123" -> "abcd123")
-    local pageId = decoded.url:match("^/(%w+)$")
-    if not pageId then
-        warn("[CreateLobby] Failed to extract pageId from URL:", decoded.url)
-        return nil, nil, nil
-    end
-
-    local editCode = decoded.edit_code
-    local accessCode = tostring(math.random(100000,999999))
-
-    -- Step 2: Save session
     session.pageId = pageId
     session.editCode = editCode
     session.accessCode = accessCode
     session.messages = {}
-    session.players = {}
 
-    -- Step 3: Write initial JSON
-    local initialData = {
+    -- 3: Write initial JSON (players/messages) with metadata
+    local initial = {
         messages = {},
         players = {},
         created = os.time()
     }
 
-    local content = "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n---\n" .. HttpService:JSONEncode(initialData)
+    local content = "SECRET_RAW_ACCESS_CODE = " .. accessCode .. "\n" ..
+                    "---\n" .. HttpService:JSONEncode(initial)
 
-    local writeOk, writeRes = pcall(function()
+    -- Need to re‑get CSRF token (fresh session)
+    local csrf2, cookie2 = getCsrf()
+    if not csrf2 then
+        warn("[CreateLobby] Failed to get CSRF token for edit")
+        return pageId, editCode, accessCode  -- page exists, but write may fail
+    end
+
+    local body2 = formEncode({
+        csrfmiddlewaretoken = csrf2,
+        edit_code = editCode,
+        text = content
+    })
+
+    local ok3, res2 = pcall(function()
         return request({
             Url = "https://rentry.co/api/edit/" .. pageId,
             Method = "POST",
             Headers = {
-                ["Content-Type"] = "application/json",
+                ["Content-Type"] = "application/x-www-form-urlencoded",
+                ["Cookie"] = cookie2,
+                ["Referer"] = "https://rentry.co/" .. pageId,
                 ["Accept"] = "application/json"
             },
-            Body = HttpService:JSONEncode({ edit_code = editCode, text = content })
+            Body = body2
         })
     end)
 
-    if not writeOk or not writeRes or writeRes.StatusCode ~= 200 then
-        warn("[CreateLobby] Failed to write initial JSON to Rentry page")
-        return nil, nil, nil
+    if not ok3 or not res2 or res2.StatusCode ~= 200 then
+        warn("[CreateLobby] Failed to write initial page data", res2 and res2.StatusCode or res2)
+        return pageId, editCode, accessCode
     end
 
-    -- Success
-    print("[CreateLobby] Lobby created! ID:", pageId, "EditCode:", editCode, "AccessCode:", accessCode)
     return pageId, editCode, accessCode
 end
 
