@@ -211,4 +211,10 @@ task.spawn(function()
     end
 end)
 
+Players.PlayerRemoving:Connect(function(player)
+    if player==LocalPlayer then
+        module.LeaveLobby()
+    end
+end)
+
 return module
