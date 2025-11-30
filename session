@@ -1,22 +1,12 @@
---========================================================
---  JSONBIN.IO MULTIPLAYER LOBBY MODULE (Polished)
---========================================================
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
 local module = {}
 
--- =======================================================
--- CONFIGURATION
--- =======================================================
--- Sign up at https://jsonbin.io and get a free bin API key
 local JSONBIN_API_KEY = "$2a$10$Tpvo6h8xS1iR4LPV385IFOQyndfLi88O0sOIV/Q9mc.2wsd3wpePO"
 local JSONBIN_BASE = "https://api.jsonbin.io/v3/b"
 
--- =======================================================
--- SESSION STATE
--- =======================================================
 local session = {
     binId = nil,
     messages = {},
@@ -29,9 +19,6 @@ local function decode(s)
     return ok and data or nil
 end
 
--- =======================================================
--- WRITE JSON TO BIN
--- =======================================================
 local function writeBin(data)
     if not session.binId then return false end
     local ok, res = pcall(function()
@@ -48,9 +35,6 @@ local function writeBin(data)
     return ok and res and res.StatusCode >= 200 and res.StatusCode < 300
 end
 
--- =======================================================
--- READ JSON FROM BIN
--- =======================================================
 local function readBin()
     if not session.binId then return nil end
     local ok, res = pcall(function()
@@ -67,9 +51,6 @@ local function readBin()
     return decoded and decoded.record or nil
 end
 
--- =======================================================
--- CREATE LOBBY
--- =======================================================
 function module.CreateLobby()
     local initialData = {
         messages = {},
@@ -106,9 +87,6 @@ function module.CreateLobby()
     return session.binId
 end
 
--- =======================================================
--- JOIN LOBBY
--- =======================================================
 function module.JoinLobby(binId)
     session.binId = binId
     local data = readBin()
@@ -125,9 +103,6 @@ function module.JoinLobby(binId)
     return true
 end
 
--- =======================================================
--- LEAVE LOBBY
--- =======================================================
 function module.LeaveLobby()
     if not session.binId then return end
     local data = readBin()
@@ -145,9 +120,6 @@ function module.LeaveLobby()
     session.listeners = {}
 end
 
--- =======================================================
--- SEND MESSAGE
--- =======================================================
 function module.SendMessage(text)
     if not session.binId then return false end
     local data = readBin()
@@ -164,9 +136,6 @@ function module.SendMessage(text)
     return writeBin(data)
 end
 
--- =======================================================
--- LISTEN TO MESSAGES
--- =======================================================
 function module.ListenToMessages(includeSelf, callback)
     table.insert(session.listeners, {
         includeSelf = includeSelf,
@@ -175,18 +144,12 @@ function module.ListenToMessages(includeSelf, callback)
     })
 end
 
--- =======================================================
--- LIST PLAYERS IN LOBBY
--- =======================================================
 function module.ListPlayersInLobby()
     local data = readBin()
     if not data or not data.players then return {} end
     return data.players
 end
 
--- =======================================================
--- BACKGROUND LISTENER LOOP
--- =======================================================
 task.spawn(function()
     while true do
         if session.binId then
