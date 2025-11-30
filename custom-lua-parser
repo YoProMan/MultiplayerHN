@@ -274,16 +274,54 @@ function part.LocatePart(exportData)
 		return nil
 	end
 	
-	if exportData.ParentPath then
-		local name = exportData.Properties and exportData.Properties.Name
-		
-		local parent = FindInstanceByPath(exportData.ParentPath)
-		if parent and name then
-			return parent:FindFirstChild(name)
+	if not exportData.ParentPath then
+		warn("Export data missing ParentPath")
+		return nil
+	end
+	
+	local name = exportData.Properties and exportData.Properties.Name
+	local exportedPos = exportData.Properties and exportData.Properties.Position
+	
+	if not name then
+		warn("Export data missing Name property")
+		return nil
+	end
+	
+	local parent = FindInstanceByPath(exportData.ParentPath)
+	if not parent then
+		warn("Could not find parent from path")
+		return nil
+	end
+	
+	if not exportedPos or not exportedPos.__type then
+		for _, child in ipairs(parent:GetChildren()) do
+			if child.Name == name then
+				return child
+			end
+		end
+		warn("Could not locate part by name")
+		return nil
+	end
+	
+	local targetPos = DeserializeValue(exportedPos)
+	local closestMatch = nil
+	local closestDistance = math.huge
+	
+	for _, child in ipairs(parent:GetChildren()) do
+		if child.Name == name and child:IsA("BasePart") then
+			local distance = (child.Position - targetPos).Magnitude
+			if distance < closestDistance then
+				closestDistance = distance
+				closestMatch = child
+			end
 		end
 	end
 	
-	warn("Could not locate part from export data")
+	if closestMatch and closestDistance < 0.01 then
+		return closestMatch
+	end
+	
+	warn("Could not locate part matching name and position")
 	return nil
 end
 
