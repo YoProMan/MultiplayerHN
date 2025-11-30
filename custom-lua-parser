@@ -1,0 +1,285 @@
+local part = {}
+
+local function SerializeValue(value)
+	local valueType = typeof(value)
+
+	if valueType == "Vector3" then
+		return {__type = "Vector3", x = value.X, y = value.Y, z = value.Z}
+	elseif valueType == "Vector2" then
+		return {__type = "Vector2", x = value.X, y = value.Y}
+	elseif valueType == "CFrame" then
+		local components = {value:GetComponents()}
+		return {__type = "CFrame", components = components}
+	elseif valueType == "Color3" then
+		return {__type = "Color3", r = value.R, g = value.G, b = value.B}
+	elseif valueType == "UDim2" then
+		return {
+			__type = "UDim2",
+			x_scale = value.X.Scale,
+			x_offset = value.X.Offset,
+			y_scale = value.Y.Scale,
+			y_offset = value.Y.Offset
+		}
+	elseif valueType == "UDim" then
+		return {__type = "UDim", scale = value.Scale, offset = value.Offset}
+	elseif valueType == "NumberSequence" then
+		local keypoints = {}
+		for _, kp in ipairs(value.Keypoints) do
+			table.insert(keypoints, {time = kp.Time, value = kp.Value, envelope = kp.Envelope})
+		end
+		return {__type = "NumberSequence", keypoints = keypoints}
+	elseif valueType == "ColorSequence" then
+		local keypoints = {}
+		for _, kp in ipairs(value.Keypoints) do
+			table.insert(keypoints, {
+				time = kp.Time,
+				color = {r = kp.Value.R, g = kp.Value.G, b = kp.Value.B}
+			})
+		end
+		return {__type = "ColorSequence", keypoints = keypoints}
+	elseif valueType == "NumberRange" then
+		return {__type = "NumberRange", min = value.Min, max = value.Max}
+	elseif valueType == "Rect" then
+		return {
+			__type = "Rect",
+			minX = value.Min.X, minY = value.Min.Y,
+			maxX = value.Max.X, maxY = value.Max.Y
+		}
+	elseif valueType == "PhysicalProperties" then
+		return {
+			__type = "PhysicalProperties",
+			density = value.Density,
+			friction = value.Friction,
+			elasticity = value.Elasticity,
+			frictionWeight = value.FrictionWeight,
+			elasticityWeight = value.ElasticityWeight
+		}
+	elseif valueType == "EnumItem" then
+		return {__type = "EnumItem", enumType = tostring(value.EnumType), name = value.Name, value = value.Value}
+	elseif valueType == "Instance" then
+		-- Store instance reference path
+		return {__type = "Instance", path = value:GetFullName()}
+	elseif valueType == "BrickColor" then
+		return {__type = "BrickColor", number = value.Number}
+	end
+
+	return value
+end
+
+local function DeserializeValue(data)
+	if type(data) ~= "table" or not data.__type then
+		return data
+	end
+
+	local valueType = data.__type
+
+	if valueType == "Vector3" then
+		return Vector3.new(data.x, data.y, data.z)
+	elseif valueType == "Vector2" then
+		return Vector2.new(data.x, data.y)
+	elseif valueType == "CFrame" then
+		return CFrame.new(unpack(data.components))
+	elseif valueType == "Color3" then
+		return Color3.new(data.r, data.g, data.b)
+	elseif valueType == "UDim2" then
+		return UDim2.new(data.x_scale, data.x_offset, data.y_scale, data.y_offset)
+	elseif valueType == "UDim" then
+		return UDim.new(data.scale, data.offset)
+	elseif valueType == "NumberSequence" then
+		local keypoints = {}
+		for _, kp in ipairs(data.keypoints) do
+			table.insert(keypoints, NumberSequenceKeypoint.new(kp.time, kp.value, kp.envelope))
+		end
+		return NumberSequence.new(keypoints)
+	elseif valueType == "ColorSequence" then
+		local keypoints = {}
+		for _, kp in ipairs(data.keypoints) do
+			table.insert(keypoints, ColorSequenceKeypoint.new(kp.time, Color3.new(kp.color.r, kp.color.g, kp.color.b)))
+		end
+		return ColorSequence.new(keypoints)
+	elseif valueType == "NumberRange" then
+		return NumberRange.new(data.min, data.max)
+	elseif valueType == "Rect" then
+		return Rect.new(data.minX, data.minY, data.maxX, data.maxY)
+	elseif valueType == "PhysicalProperties" then
+		return PhysicalProperties.new(
+			data.density,
+			data.friction,
+			data.elasticity,
+			data.frictionWeight,
+			data.elasticityWeight
+		)
+	elseif valueType == "EnumItem" then
+		return Enum[data.enumType][data.name]
+	elseif valueType == "Instance" then
+		-- Try to find instance by path
+		local pathParts = string.split(data.path, ".")
+		local current = game
+		for _, part in ipairs(pathParts) do
+			if part ~= "game" then
+				current = current:FindFirstChild(part)
+				if not current then
+					return nil
+				end
+			end
+		end
+		return current
+	elseif valueType == "BrickColor" then
+		return BrickColor.new(data.number)
+	end
+
+	return data
+end
+
+-- List of properties to skip (read-only or problematic)
+local SkipProperties = {
+	"ClassName", "DataCost", "IsLoaded", "CurrentCamera",
+	"AbsoluteSize", "AbsolutePosition", "ViewportSize", "LocalTransparencyModifier"
+}
+
+local function ShouldSkipProperty(propName)
+	for _, skip in ipairs(SkipProperties) do
+		if propName == skip then
+			return true
+		end
+	end
+	return false
+end
+
+local function SerializeInstance(inst)
+	local data = {}
+	data.ClassName = inst.ClassName
+	data.Properties = {}
+	data.Children = {}
+	data.Attributes = {}
+
+	-- Store parent path
+	if inst.Parent then
+		data.ParentPath = inst.Parent:GetFullName()
+	end
+
+	-- Get ALL writable properties
+	for _, prop in ipairs({"Anchored", "CanCollide", "CanQuery", "CanTouch", "CastShadow", 
+		"Material", "MaterialVariant", "Color", "Transparency", "Reflectance", 
+		"Size", "Position", "Orientation", "CFrame", "Shape", "Name",
+		"TopSurface", "BottomSurface", "LeftSurface", "RightSurface", "FrontSurface", "BackSurface",
+		"CustomPhysicalProperties", "MeshId", "TextureID", "RenderFidelity",
+		"UsePartColor", "PrimaryPart", "LevelOfDetail",
+		"Axis", "SecondaryAxis", "Visible",
+		"SoundId", "TimePosition", "PlaybackSpeed", "Looped", "RollOffMaxDistance", 
+		"RollOffMinDistance", "RollOffMode", "Volume", "PlayOnRemove",
+		"LightEmission", "LightInfluence", "Texture", "Lifetime", "Rate", "Speed", 
+		"SpreadAngle", "Rotation", "RotSpeed", "ZOffset", "EmissionDirection", "Enabled",
+		"TextureLength", "TextureMode", "TextureSpeed", "Width0", "Width1", 
+		"CurveSize0", "CurveSize1", "FaceCamera",
+		"Brightness", "Range", "Shadows", "Angle", "Face",
+		"BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", 
+		"ZIndex", "AnchorPoint",
+		"Text", "TextColor3", "TextSize", "Font", "TextStrokeTransparency", 
+		"TextStrokeColor3", "RichText",
+		"Image", "ImageColor3", "ImageTransparency", "ScaleType", "SliceCenter", "TileSize",
+		"Archivable", "BrickColor", "CollisionGroupId", "Locked", "Massless",
+		"CanBeDropped", "CanBeEquipped", "Grip", "ToolTip", "ManualActivationOnly",
+		"LocalizationTable", "Value", "MinValue", "MaxValue"
+		}) do
+		if not ShouldSkipProperty(prop) then
+			local success, value = pcall(function()
+				return inst[prop]
+			end)
+			if success and value ~= nil then
+				data.Properties[prop] = SerializeValue(value)
+			end
+		end
+	end
+
+	-- Serialize attributes
+	for name, value in pairs(inst:GetAttributes()) do
+		data.Attributes[name] = SerializeValue(value)
+	end
+
+	-- Serialize children recursively
+	for _, child in ipairs(inst:GetChildren()) do
+		table.insert(data.Children, SerializeInstance(child))
+	end
+
+	return data
+end
+
+local function FindInstanceByPath(path)
+	if not path then return nil end
+
+	local pathParts = string.split(path, ".")
+	local current = game
+
+	for _, part in ipairs(pathParts) do
+		if part ~= "game" then
+			current = current:FindFirstChild(part)
+			if not current then
+				warn("Could not find parent at path:", path)
+				return nil
+			end
+		end
+	end
+
+	return current
+end
+
+local function RebuildInstance(data, overrideParent)
+	local success, inst = pcall(function()
+		return Instance.new(data.ClassName)
+	end)
+
+	if not success then
+		warn("Failed to create instance of type:", data.ClassName)
+		return nil
+	end
+
+	-- Apply ALL properties (except Parent, we'll do that last)
+	for prop, value in pairs(data.Properties) do
+		local deserializedValue = DeserializeValue(value)
+		local success, err = pcall(function()
+			inst[prop] = deserializedValue
+		end)
+		if not success then
+			-- Silently ignore failed properties
+		end
+	end
+
+	-- Apply attributes
+	for name, value in pairs(data.Attributes) do
+		local deserializedValue = DeserializeValue(value)
+		pcall(function()
+			inst:SetAttribute(name, deserializedValue)
+		end)
+	end
+
+	-- Rebuild children recursively (before setting parent)
+	for _, childData in ipairs(data.Children) do
+		RebuildInstance(childData, inst)
+	end
+
+	-- Set parent LAST (this is crucial)
+	local targetParent = overrideParent
+	if not targetParent and data.ParentPath then
+		targetParent = FindInstanceByPath(data.ParentPath)
+	end
+
+	if targetParent then
+		inst.Parent = targetParent
+		print("Set parent to:", targetParent:GetFullName())
+	else
+		warn("No parent found for instance:", inst.Name)
+	end
+
+	return inst
+end
+
+function part.ExportInstance(instance)
+	return SerializeInstance(instance)
+end
+
+function part.ImportInstance(data, overrideParent)
+	return RebuildInstance(data, overrideParent)
+end
+
+return part
