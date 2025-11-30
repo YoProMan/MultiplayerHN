@@ -57,7 +57,6 @@ local function SerializeValue(value)
 	elseif valueType == "EnumItem" then
 		return {__type = "EnumItem", enumType = tostring(value.EnumType), name = value.Name, value = value.Value}
 	elseif valueType == "Instance" then
-		-- Store instance reference path
 		return {__type = "Instance", path = value:GetFullName()}
 	elseif valueType == "BrickColor" then
 		return {__type = "BrickColor", number = value.Number}
@@ -112,7 +111,6 @@ local function DeserializeValue(data)
 	elseif valueType == "EnumItem" then
 		return Enum[data.enumType][data.name]
 	elseif valueType == "Instance" then
-		-- Try to find instance by path
 		local pathParts = string.split(data.path, ".")
 		local current = game
 		for _, part in ipairs(pathParts) do
@@ -131,7 +129,6 @@ local function DeserializeValue(data)
 	return data
 end
 
--- List of properties to skip (read-only or problematic)
 local SkipProperties = {
 	"ClassName", "DataCost", "IsLoaded", "CurrentCamera",
 	"AbsoluteSize", "AbsolutePosition", "ViewportSize", "LocalTransparencyModifier"
@@ -153,12 +150,10 @@ local function SerializeInstance(inst)
 	data.Children = {}
 	data.Attributes = {}
 
-	-- Store parent path
 	if inst.Parent then
 		data.ParentPath = inst.Parent:GetFullName()
 	end
 
-	-- Get ALL writable properties
 	for _, prop in ipairs({"Anchored", "CanCollide", "CanQuery", "CanTouch", "CastShadow", 
 		"Material", "MaterialVariant", "Color", "Transparency", "Reflectance", 
 		"Size", "Position", "Orientation", "CFrame", "Shape", "Name",
@@ -192,12 +187,10 @@ local function SerializeInstance(inst)
 		end
 	end
 
-	-- Serialize attributes
 	for name, value in pairs(inst:GetAttributes()) do
 		data.Attributes[name] = SerializeValue(value)
 	end
 
-	-- Serialize children recursively
 	for _, child in ipairs(inst:GetChildren()) do
 		table.insert(data.Children, SerializeInstance(child))
 	end
@@ -234,18 +227,13 @@ local function RebuildInstance(data, overrideParent)
 		return nil
 	end
 
-	-- Apply ALL properties (except Parent, we'll do that last)
 	for prop, value in pairs(data.Properties) do
 		local deserializedValue = DeserializeValue(value)
 		local success, err = pcall(function()
 			inst[prop] = deserializedValue
 		end)
-		if not success then
-			-- Silently ignore failed properties
-		end
 	end
 
-	-- Apply attributes
 	for name, value in pairs(data.Attributes) do
 		local deserializedValue = DeserializeValue(value)
 		pcall(function()
@@ -253,12 +241,10 @@ local function RebuildInstance(data, overrideParent)
 		end)
 	end
 
-	-- Rebuild children recursively (before setting parent)
 	for _, childData in ipairs(data.Children) do
 		RebuildInstance(childData, inst)
 	end
 
-	-- Set parent LAST (this is crucial)
 	local targetParent = overrideParent
 	if not targetParent and data.ParentPath then
 		targetParent = FindInstanceByPath(data.ParentPath)
@@ -280,6 +266,25 @@ end
 
 function part.ImportInstance(data, overrideParent)
 	return RebuildInstance(data, overrideParent)
+end
+
+function part.LocatePart(exportData)
+	if type(exportData) ~= "table" then
+		warn("LocatePart requires table data from ExportInstance")
+		return nil
+	end
+	
+	if exportData.ParentPath then
+		local name = exportData.Properties and exportData.Properties.Name
+		
+		local parent = FindInstanceByPath(exportData.ParentPath)
+		if parent and name then
+			return parent:FindFirstChild(name)
+		end
+	end
+	
+	warn("Could not locate part from export data")
+	return nil
 end
 
 return part
